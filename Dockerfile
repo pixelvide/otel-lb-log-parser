@@ -11,7 +11,7 @@ RUN go mod download
 COPY . .
 
 # Build the Lambda function
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o bootstrap cmd/lambda/main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o bootstrap ./cmd/lambda
 
 # Final stage - use AWS Lambda base image
 FROM public.ecr.aws/lambda/provided:al2023
