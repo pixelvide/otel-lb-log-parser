@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  alb-processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: alb-processor:latest
+    container_name: alb-lambda-processor
+    environment:
+      # OTLP Configuration
+      - SIGNOZ_OTLP_ENDPOINT=http://signoz:4318/v1/logs
+      - BASIC_AUTH_USERNAME=
+      - BASIC_AUTH_PASSWORD=
+      - MAX_BATCH_SIZE=500
+      - MAX_RETRIES=3
+      # AWS Configuration (for local testing)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=ap-south-1
+    ports:
+      - "9000:8080"  # Lambda Runtime Interface Emulator
+    volumes:
+      # Mount for local testing with files
+      - ./test-logs:/var/task/logs:ro
+    networks:
+      - lambda-network
+
+networks:
+  lambda-network:
+    driver: bridge
