@@ -454,3 +454,88 @@ func generateTraceID() string {
 	}
 	return fmt.Sprintf("%x", b)
 }
+
+// ConvertWAFToOTel converts WAF log entry to OTLP log record
+func ConvertWAFToOTel(entry *parser.WAFLogEntry) OTelLogRecord {
+	// WAF timestamp is already int64 (milliseconds)
+	timeUnixNano := entry.Timestamp * 1000000
+
+	attributes := buildAttributesWAF(entry)
+
+	severityText := "INFO"
+	severityNumber := 9
+	if entry.Action == "BLOCK" {
+		severityText = "WARN"
+		severityNumber = 13
+	}
+
+	bodyContent := fmt.Sprintf("%s %s %s", entry.HTTPRequest.HTTPMethod, entry.HTTPRequest.URI, entry.Action)
+
+	traceID := generateTraceID()
+	spanID := generateSpanID()
+
+	return OTelLogRecord{
+		TimeUnixNano:   fmt.Sprintf("%d", timeUnixNano),
+		SeverityNumber: severityNumber,
+		SeverityText:   severityText,
+		Body:           map[string]string{"stringValue": bodyContent},
+		Attributes:     attributes,
+		TraceID:        traceID,
+		SpanID:         spanID,
+	}
+}
+
+func buildAttributesWAF(entry *parser.WAFLogEntry) []OTelAttribute {
+	attrs := []OTelAttribute{}
+
+	// WAF Attributes
+	addAttr(&attrs, "aws.waf.web_acl_id", entry.WebACLID)
+	addAttr(&attrs, "aws.waf.terminating_rule_id", entry.TerminatingRuleID)
+	addAttr(&attrs, "aws.waf.terminating_rule_type", entry.TerminatingRuleType)
+	addAttr(&attrs, "aws.waf.action", entry.Action)
+	addAttr(&attrs, "aws.waf.http_source_name", entry.HTTPSourceName)
+	addAttr(&attrs, "aws.waf.http_source_id", entry.HTTPSourceID)
+
+	// HTTP Attributes
+	req := entry.HTTPRequest
+	addAttr(&attrs, "http.request.method", req.HTTPMethod)
+	addAttr(&attrs, "url.path", req.URI)
+	addAttr(&attrs, "url.query", req.Args)
+	addAttr(&attrs, "network.protocol.version", req.HTTPVersion)
+	addAttr(&attrs, "client.address", req.ClientIP)
+
+	// User Agent from headers
+	for _, h := range req.Headers {
+		if strings.EqualFold(h.Name, "User-Agent") {
+			addAttr(&attrs, "user_agent.original", h.Value)
+		}
+		if strings.EqualFold(h.Name, "Host") {
+			addAttr(&attrs, "server.address", h.Value)
+		}
+	}
+
+	// Parse WebACLID for region and account
+	// ARN formats:
+	// arn:aws:wafv2:region:account:regional/webacl/name/id
+	// arn:aws:wafv2::account:global/webacl/name/id (CloudFront)
+	if entry.WebACLID != "" {
+		parts := strings.Split(entry.WebACLID, ":")
+		if len(parts) >= 6 {
+			// Region is parts[3] (can be empty for global)
+			region := parts[3]
+			if region == "" {
+				region = "global"
+			}
+			account := parts[4]
+
+			addAttr(&attrs, "cloud.region", region)
+			addAttr(&attrs, "cloud.account.id", account)
+		}
+	}
+
+	addAttr(&attrs, "cloud.provider", "aws")
+	addAttr(&attrs, "cloud.platform", "aws_waf")
+	addAttr(&attrs, "service.name", "waf-log-parser")
+
+	return attrs
+}

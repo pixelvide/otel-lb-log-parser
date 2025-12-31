@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,18 +10,17 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 
+	"github.com/pixelvide/otel-lb-log-parser/cmd/lambda/adapter"
 	"github.com/pixelvide/otel-lb-log-parser/pkg/converter"
-	"github.com/pixelvide/otel-lb-log-parser/pkg/parser"
+	"github.com/pixelvide/otel-lb-log-parser/pkg/processor"
 )
 
 var (
@@ -36,6 +33,7 @@ var (
 	retryBaseSec  float64
 	logger        *slog.Logger
 	maxConcurrent int
+	registry      *processor.Registry
 )
 
 func init() {
@@ -55,56 +53,12 @@ func init() {
 	maxRetries = getEnvInt("MAX_RETRIES", 3)
 	maxConcurrent = getEnvInt("MAX_CONCURRENT", 10)
 	retryBaseSec = 1.0
-}
 
-// LogAdapter interface for polymorphic log handling
-type LogAdapter interface {
-	GetResourceKey() string
-	GetResourceAttributes() []converter.OTelAttribute
-	ToOTel() converter.OTelLogRecord
-}
-
-// ALBAdapter implementation
-type ALBAdapter struct {
-	*parser.ALBLogEntry
-}
-
-func (a ALBAdapter) GetResourceKey() string {
-	arn := a.ALBLogEntry.TargetGroupARN
-	if arn == "" || arn == "-" {
-		arn = a.ALBLogEntry.ChosenCertARN
-	}
-	return arn
-}
-
-func (a ALBAdapter) GetResourceAttributes() []converter.OTelAttribute {
-	return converter.ExtractResourceAttributes(a.ALBLogEntry)
-}
-
-func (a ALBAdapter) ToOTel() converter.OTelLogRecord {
-	return converter.ConvertToOTel(a.ALBLogEntry)
-}
-
-// NLBAdapter implementation
-type NLBAdapter struct {
-	*parser.NLBLogEntry
-}
-
-func (a NLBAdapter) GetResourceKey() string {
-	arn := a.NLBLogEntry.ChosenCertARN
-	if arn == "" || arn == "-" {
-		// Fallback to ListenerID or ELB name
-		arn = a.NLBLogEntry.ListenerID // often contains ARN
-	}
-	return arn
-}
-
-func (a NLBAdapter) GetResourceAttributes() []converter.OTelAttribute {
-	return converter.ExtractResourceAttributesNLB(a.NLBLogEntry)
-}
-
-func (a NLBAdapter) ToOTel() converter.OTelLogRecord {
-	return converter.ConvertNLBToOTel(a.NLBLogEntry)
+	// Initialize Registry
+	registry = processor.NewRegistry()
+	registry.Register(&processor.ALBProcessor{MaxBatchSize: maxBatchSize, MaxConcurrent: maxConcurrent})
+	registry.Register(&processor.NLBProcessor{MaxBatchSize: maxBatchSize, MaxConcurrent: maxConcurrent})
+	registry.Register(&processor.WAFProcessor{})
 }
 
 func handler(ctx context.Context, s3Event events.S3Event) error {
@@ -117,39 +71,19 @@ func handler(ctx context.Context, s3Event events.S3Event) error {
 		log := logger.With("bucket", bucket, "key", key)
 		log.Info("Processing S3 object")
 
-		// Determine log type and parser
-		var parseFunc func(string) (LogAdapter, error)
-
-		// Check for NLB vs ALB based on file naming convention
-		// NLB: ..._net.load-balancer-id...
-		// ALB: ..._app.load-balancer-id...
-		if strings.Contains(key, "_net.") {
-			log.Info("Detected NLB log based on filename")
-			parseFunc = func(line string) (LogAdapter, error) {
-				entry, err := parser.ParseNLBLogLine(line)
-				if err != nil {
-					return nil, err
-				}
-				return NLBAdapter{entry}, nil
-			}
-		} else if strings.Contains(key, "_app.") {
-			log.Info("Detected ALB log based on filename")
-			parseFunc = func(line string) (LogAdapter, error) {
-				entry, err := parser.ParseLogLine(line)
-				if err != nil {
-					return nil, err
-				}
-				return ALBAdapter{entry}, nil
-			}
-		} else {
-			log.Info("Skipping object: filename pattern does not match _net. or _app.", "key", key)
+		// Find matching processor
+		proc := registry.Find(bucket, key)
+		if proc == nil {
+			log.Info("Skipping object: no matching processor found", "key", key)
 			continue
 		}
 
-		// Read and parse logs from S3
-		entries, err := readAndParseFromS3(bucket, key, parseFunc)
+		log.Info("Found processor", "processor", proc.Name())
+
+		// Process logs
+		entries, err := proc.Process(ctx, logger, s3Client, bucket, key)
 		if err != nil {
-			log.Error("Error processing S3 object", "error", err)
+			log.Error("Error processing S3 object", "processor", proc.Name(), "error", err)
 			return err
 		}
 
@@ -170,91 +104,7 @@ func handler(ctx context.Context, s3Event events.S3Event) error {
 	return nil
 }
 
-func readAndParseFromS3(bucket, key string, parseFunc func(string) (LogAdapter, error)) ([]LogAdapter, error) {
-	// Get object from S3
-	result, err := s3Client.GetObject(&s3.GetObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get S3 object: %w", err)
-	}
-	defer result.Body.Close()
-
-	var reader io.Reader = result.Body
-
-	// Handle gzip compression
-	if strings.HasSuffix(key, ".gz") {
-		gzReader, err := gzip.NewReader(result.Body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create gzip reader: %w", err)
-		}
-		defer gzReader.Close()
-		reader = gzReader
-	}
-
-	// Create channels for parallel processing
-	linesChan := make(chan string, maxBatchSize)
-	entriesChan := make(chan LogAdapter, maxBatchSize)
-	var wg sync.WaitGroup
-
-	// Start workers
-	numWorkers := maxConcurrent
-	if numWorkers < 1 {
-		numWorkers = 1
-	}
-
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for line := range linesChan {
-				if line == "" {
-					continue
-				}
-				entry, err := parseFunc(line)
-				if err == nil && entry != nil {
-					entriesChan <- entry
-				}
-			}
-		}()
-	}
-
-	// Start a goroutine to read lines and send to workers
-	go func() {
-		scanner := bufio.NewScanner(reader)
-		// Increase buffer size
-		buf := make([]byte, 0, 64*1024)
-		scanner.Buffer(buf, 1024*1024)
-
-		for scanner.Scan() {
-			linesChan <- scanner.Text()
-		}
-
-		if err := scanner.Err(); err != nil {
-			logger.Error("Error scanning S3 object", "error", err)
-		}
-
-		close(linesChan)
-	}()
-
-	// Start a goroutine to close entriesChan when all workers are done
-	go func() {
-		wg.Wait()
-		close(entriesChan)
-	}()
-
-	// Collect results
-	entries := make([]LogAdapter, 0)
-	for entry := range entriesChan {
-		entries = append(entries, entry)
-	}
-
-	logger.Info("Parsed entries", "count", len(entries))
-	return entries, nil
-}
-
-func convertAndSend(entries []LogAdapter) error {
+func convertAndSend(entries []adapter.LogAdapter) error {
 	// Group by resource
 	grouped := make(map[string]*resourceGroup)
 
