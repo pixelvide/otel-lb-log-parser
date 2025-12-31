@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -434,9 +435,9 @@ func getEnv(key, defaultValue string) string {
 
 func getEnvInt(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
-		var result int
-		fmt.Sscanf(value, "%d", &result)
-		return result
+		if result, err := strconv.Atoi(value); err == nil {
+			return result
+		}
 	}
 	return defaultValue
 }
