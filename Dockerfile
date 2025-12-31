@@ -1,5 +1,5 @@
 # Multi-stage build for Go Lambda
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 WORKDIR /build
 
@@ -11,7 +11,9 @@ RUN go mod download
 COPY . .
 
 # Build the Lambda function
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o bootstrap ./cmd/lambda
+# Use TARGETARCH to support multi-arch builds (amd64/arm64)
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -ldflags="-w -s" -o bootstrap ./cmd/lambda
 
 # Final stage - use AWS Lambda base image
 FROM public.ecr.aws/lambda/provided:al2023
