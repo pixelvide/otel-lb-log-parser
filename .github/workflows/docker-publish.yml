@@ -1,0 +1,118 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ "**" ]
+    # Publish semver tags as releases.
+    tags: [ 'v*.*.*' ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  # Use docker.io for Docker Hub if empty
+  REGISTRY: ghcr.io
+  # github.repository as <account>/<repo>
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'
+          cache: false
+
+      - name: Run Linters
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: .
+          args: --timeout=5m
+
+      - name: Run Unit Tests
+        run: go test ./... -v
+
+  build-and-push:
+    name: Build & Publish Docker
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # This is used to complete the identity challenge
+      # with sigstore/fulcio when running outside of PRs.
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Set up QEMU for multi-arch builds
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      # Set up Buildx to support cache export
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      # Login against a Docker registry except on PR
+      - name: Log into registry ${{ env.REGISTRY }}
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Prod Metadata: Only for Releases (SemVer)
+      - name: Extract Prod Docker metadata
+        id: meta-prod
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+
+      # Debug Metadata: Releases (SemVer) + Branches (Full SHA)
+      - name: Extract Debug Docker metadata
+        id: meta-debug
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/debug
+          tags: |
+            type=semver,pattern={{version}}
+            type=ref,event=branch
+            type=sha,format=long,prefix=
+
+      - name: Debug Tags
+        run: |
+          echo "Prod Tags:"
+          echo "${{ steps.meta-prod.outputs.tags }}"
+          echo "Debug Tags:"
+          echo "${{ steps.meta-debug.outputs.tags }}"
+
+      # Build and push Docker image with Buildx (don't push on PR)
+      - name: Build and push Docker image
+        id: build-and-push
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ steps.meta-prod.outputs.tags }}
+            ${{ steps.meta-debug.outputs.tags }}
+          labels: |
+            ${{ steps.meta-prod.outputs.labels }}
+            ${{ steps.meta-debug.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

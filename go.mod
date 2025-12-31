@@ -1,6 +1,6 @@
 module github.com/pixelvide/otel-lb-log-parser
 
-go 1.21
+go 1.24
 
 require (
 	github.com/aws/aws-lambda-go v1.41.0
