@@ -118,17 +118,9 @@ func handler(ctx context.Context, rawEvent json.RawMessage) error {
 func extractS3Records(logger *slog.Logger, raw []byte) ([]events.S3EventRecord, error) {
 	var s3Records []events.S3EventRecord
 
-	// 1. Try Direct S3 Event
-	var s3Event events.S3Event
-	if err := json.Unmarshal(raw, &s3Event); err == nil && len(s3Event.Records) > 0 {
-		if s3Event.Records[0].EventSource == "aws:s3" || s3Event.Records[0].S3.Bucket.Name != "" {
-			logger.Info("Detected direct S3 event")
-			return s3Event.Records, nil
-		}
-	}
-
-	// 2. Try SQS Event
+	// Try SQS Event
 	var sqsEvent events.SQSEvent
+	// We strictly check for SQS Event structure
 	if err := json.Unmarshal(raw, &sqsEvent); err == nil && len(sqsEvent.Records) > 0 {
 		if sqsEvent.Records[0].Body != "" {
 			logger.Info("Detected SQS event", "count", len(sqsEvent.Records))
@@ -143,40 +135,14 @@ func extractS3Records(logger *slog.Logger, raw []byte) ([]events.S3EventRecord, 
 			if len(s3Records) > 0 {
 				return s3Records, nil
 			}
+			return nil, fmt.Errorf("no valid S3 records found in SQS batch")
 		}
 	}
 
-	// 3. Try SNS Event
-	var snsEvent events.SNSEvent
-	if err := json.Unmarshal(raw, &snsEvent); err == nil && len(snsEvent.Records) > 0 {
-		if snsEvent.Records[0].SNS.Message != "" {
-			logger.Info("Detected SNS event")
-			for _, record := range snsEvent.Records {
-				recs, err := parseBodyAsS3(logger, []byte(record.SNS.Message))
-				if err != nil {
-					logger.Warn("Failed to parse SNS message", "error", err)
-					continue
-				}
-				s3Records = append(s3Records, recs...)
-			}
-			if len(s3Records) > 0 {
-				return s3Records, nil
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("unknown event type or no valid records found")
+	return nil, fmt.Errorf("unknown event type or no valid records found (only SQS+EventBridge supported)")
 }
 
 func parseBodyAsS3(logger *slog.Logger, body []byte) ([]events.S3EventRecord, error) {
-	// Try Standard S3 Event
-	var s3Event events.S3Event
-	if err := json.Unmarshal(body, &s3Event); err == nil && len(s3Event.Records) > 0 {
-		if s3Event.Records[0].S3.Bucket.Name != "" {
-			return s3Event.Records, nil
-		}
-	}
-
 	// Try EventBridge S3 Event (common in SQS)
 	var ebEvent EventBridgeS3Event
 	if err := json.Unmarshal(body, &ebEvent); err == nil {
@@ -191,7 +157,7 @@ func parseBodyAsS3(logger *slog.Logger, body []byte) ([]events.S3EventRecord, er
 		}
 	}
 
-	return nil, fmt.Errorf("body does not match known S3 event formats")
+	return nil, fmt.Errorf("body does not match EventBridge S3 format")
 }
 
 // EventBridgeS3Event structure for S3 events via EventBridge
@@ -315,7 +281,7 @@ func buildPayload(resourceAttrs []converter.OTelAttribute, logRecords []converte
 				ScopeLogs: []converter.ScopeLog{
 					{
 						Scope: converter.Scope{
-							Name:    "alb-log-parser",
+							Name:    "otel-aws-log-parser",
 							Version: "1.0.0",
 						},
 						LogRecords: logRecords,

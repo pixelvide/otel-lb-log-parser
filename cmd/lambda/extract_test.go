@@ -18,37 +18,6 @@ func TestExtractS3Records(t *testing.T) {
 		expectError bool
 	}{
 		{
-			name: "Direct S3 Event",
-			input: `{
-				"Records": [
-					{
-						"eventSource": "aws:s3",
-						"awsRegion": "us-east-1",
-						"s3": {
-							"bucket": { "name": "direct-bucket" },
-							"object": { "key": "direct-key" }
-						}
-					}
-				]
-			}`,
-			wantCount:  1,
-			wantBucket: "direct-bucket",
-			wantKey:    "direct-key",
-		},
-		{
-			name: "SQS with Standard S3 Event",
-			input: `{
-				"Records": [
-					{
-						"body": "{\"Records\":[{\"eventSource\":\"aws:s3\",\"awsRegion\":\"us-west-2\",\"s3\":{\"bucket\":{\"name\":\"sqs-std-bucket\"},\"object\":{\"key\":\"sqs-std-key\"}}}]}"
-					}
-				]
-			}`,
-			wantCount:  1,
-			wantBucket: "sqs-std-bucket",
-			wantKey:    "sqs-std-key",
-		},
-		{
 			name: "SQS with EventBridge S3 Event",
 			input: `{
 				"Records": [
@@ -62,33 +31,9 @@ func TestExtractS3Records(t *testing.T) {
 			wantKey:    "sqs-eb-key",
 		},
 		{
-			name: "SNS with Standard S3 Event",
-			input: `{
-				"Records": [
-					{
-						"Sns": {
-							"Message": "{\"Records\":[{\"eventSource\":\"aws:s3\",\"awsRegion\":\"eu-central-1\",\"s3\":{\"bucket\":{\"name\":\"sns-bucket\"},\"object\":{\"key\":\"sns-key\"}}}]}"
-						}
-					}
-				]
-			}`,
-			wantCount:  1,
-			wantBucket: "sns-bucket",
-			wantKey:    "sns-key",
-		},
-		{
 			name:        "Invalid JSON",
 			input:       `{ "foo": "bar" }`,
 			expectError: true,
-		},
-		{
-			name: "SQS with Unknown Body",
-			input: `{
-				"Records": [
-					{ "body": "{\"foo\":\"bar\"}" }
-				]
-			}`,
-			expectError: true, // Should error because no valid S3 records found
 		},
 	}
 
