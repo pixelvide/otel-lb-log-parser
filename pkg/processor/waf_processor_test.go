@@ -21,13 +21,13 @@ func TestWAFProcessor_Matches(t *testing.T) {
 		},
 		{
 			name:   "Standard WAFLogs path",
-			bucket: "my-bucket",
+			bucket: "aws-waf-logs-prod",
 			key:    "AWSLogs/123/WAFLogs/us-east-1/my-acl/123_waflogs_file.log",
 			want:   true,
 		},
 		{
 			name:   "Alternative prefix with correct format",
-			bucket: "my-bucket",
+			bucket: "aws-waf-logs-custom",
 			key:    "some/prefix/WAFLogs/us-east-1/my-acl/123_waflogs_file.log",
 			want:   true,
 		},

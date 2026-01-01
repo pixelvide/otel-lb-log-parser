@@ -25,7 +25,7 @@ func (p *WAFProcessor) Name() string {
 }
 
 func (p *WAFProcessor) Matches(bucket, key string) bool {
-	return strings.Contains(key, "/WAFLogs/") && strings.Contains(key, "_waflogs_")
+	return strings.HasPrefix(bucket, "aws-waf-logs-") && strings.Contains(key, "/WAFLogs/") && strings.Contains(key, "_waflogs_")
 }
 
 func (p *WAFProcessor) Process(ctx context.Context, logger *slog.Logger, s3Client *s3.S3, bucket, key string) ([]adapter.LogAdapter, error) {
