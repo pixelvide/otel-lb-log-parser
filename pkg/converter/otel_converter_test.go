@@ -171,12 +171,16 @@ func TestExtractResourceAttributes(t *testing.T) {
 	// Verify cloud.provider exists
 	foundProvider := false
 	foundLBName := false
+	foundCloudService := false
 	for _, attr := range attrs {
 		if attr.Key == "cloud.provider" && attr.Value.StringValue != nil && *attr.Value.StringValue == "aws" {
 			foundProvider = true
 		}
 		if attr.Key == "aws.lb.name" && attr.Value.StringValue != nil && *attr.Value.StringValue == "my-load-balancer" {
 			foundLBName = true
+		}
+		if attr.Key == "cloud.service" && attr.Value.StringValue != nil && *attr.Value.StringValue == "elasticloadbalancing" {
+			foundCloudService = true
 		}
 	}
 
@@ -185,6 +189,9 @@ func TestExtractResourceAttributes(t *testing.T) {
 	}
 	if !foundLBName {
 		t.Error("aws.lb.name attribute not found in Resource Attributes")
+	}
+	if !foundCloudService {
+		t.Error("cloud.service attribute not found in Resource Attributes")
 	}
 }
 

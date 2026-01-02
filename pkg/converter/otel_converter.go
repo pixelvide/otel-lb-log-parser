@@ -136,6 +136,7 @@ func ExtractResourceAttributes(entry *parser.ALBLogEntry) []OTelAttribute {
 	attrs := []OTelAttribute{
 		{Key: "cloud.provider", Value: stringValue("aws")},
 		{Key: "cloud.platform", Value: stringValue("aws_elastic_load_balancing")},
+		{Key: "cloud.service", Value: stringValue("elasticloadbalancing")},
 		{Key: "service.name", Value: stringValue("alb-log-parser")},
 		{Key: "aws.lb.name", Value: stringValue(entry.ELB)},
 	}
@@ -423,6 +424,7 @@ func ExtractResourceAttributesNLB(entry *parser.NLBLogEntry) []OTelAttribute {
 	attrs := []OTelAttribute{
 		{Key: "cloud.provider", Value: stringValue("aws")},
 		{Key: "cloud.platform", Value: stringValue("aws_elastic_load_balancing")},
+		{Key: "cloud.service", Value: stringValue("elasticloadbalancing")},
 		{Key: "service.name", Value: stringValue("nlb-log-parser")},
 		{Key: "aws.lb.name", Value: stringValue(entry.ELB)},
 	}
