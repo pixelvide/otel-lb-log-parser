@@ -614,3 +614,120 @@ func collectProcessedRules(entry *parser.WAFLogEntry) []ProcessedRule {
 
 	return rules
 }
+
+// ConvertCloudFrontToOTel converts CloudFront log entry to OTLP log record
+func ConvertCloudFrontToOTel(entry *parser.CloudFrontLogEntry) OTelLogRecord {
+	// Convert timestamp
+	// Date: 2019-12-04, Time: 21:02:31
+	timeStr := fmt.Sprintf("%sT%sZ", entry.Date, entry.Time)
+	t, err := time.Parse(time.RFC3339, timeStr)
+	var timeUnixNano int64
+	if err != nil {
+		timeUnixNano = time.Now().UnixNano()
+	} else {
+		timeUnixNano = t.UnixNano()
+	}
+
+	attributes := buildAttributesCloudFront(entry)
+
+	severityText := "INFO"
+	severityNumber := 9
+	if entry.SCStatus >= 500 {
+		severityText = "ERROR"
+		severityNumber = 17
+	} else if entry.SCStatus >= 400 {
+		severityText = "WARN"
+		severityNumber = 13
+	}
+
+	bodyContent := fmt.Sprintf("%s %s %d", entry.CSMethod, entry.CSURIStem, entry.SCStatus)
+
+	traceID := ""
+	// Use x-edge-request-id as trace ID if it fits format, but it's base64 usually.
+	// CloudFront Request IDs are long base64 strings, not valid W3C Trace IDs.
+	// So we generate a random Trace ID.
+	traceID = generateTraceID()
+	spanID := generateSpanID()
+
+	return OTelLogRecord{
+		TimeUnixNano:   fmt.Sprintf("%d", timeUnixNano),
+		SeverityNumber: severityNumber,
+		SeverityText:   severityText,
+		Body:           map[string]string{"stringValue": bodyContent},
+		Attributes:     attributes,
+		TraceID:        traceID,
+		SpanID:         spanID,
+	}
+}
+
+func buildAttributesCloudFront(entry *parser.CloudFrontLogEntry) []OTelAttribute {
+	attrs := []OTelAttribute{}
+
+	// HTTP Attributes
+	addAttr(&attrs, "http.request.method", entry.CSMethod)
+	addIntAttr(&attrs, "http.response.status_code", entry.SCStatus)
+	addAttr(&attrs, "url.path", entry.CSURIStem)
+	addAttr(&attrs, "url.query", entry.CSURIQuery)
+	addAttr(&attrs, "network.protocol.version", entry.CSProtocolVersion) // e.g. HTTP/2.0
+	addAttr(&attrs, "network.protocol.name", entry.CSProtocol)           // http/https
+
+	// User Agent
+	decodedUA, err := url.QueryUnescape(entry.CSUserAgent)
+	if err == nil {
+		addAttr(&attrs, "user_agent.original", decodedUA)
+	} else {
+		addAttr(&attrs, "user_agent.original", entry.CSUserAgent)
+	}
+
+	// Client
+	addAttr(&attrs, "client.address", entry.CIP)
+	addIntAttr(&attrs, "client.port", entry.CPort)
+
+	// Server
+	addAttr(&attrs, "server.address", entry.CSHost) // Distribution domain or CNAME
+
+	// AWS CloudFront Specific
+	addAttr(&attrs, "aws.cloudfront.edge_location", entry.XEdgeLocation)
+	addInt64Attr(&attrs, "aws.cloudfront.sc_bytes", entry.SCBytes)
+	addInt64Attr(&attrs, "aws.cloudfront.cs_bytes", entry.CSBytes)
+	addAttr(&attrs, "aws.cloudfront.result_type", entry.XEdgeResultType)
+	addAttr(&attrs, "aws.cloudfront.request_id", entry.XEdgeRequestID)
+	addAttr(&attrs, "aws.cloudfront.host_header", entry.XHostHeader)
+	addFloatAttr(&attrs, "aws.cloudfront.time_taken", entry.TimeTaken)
+	addAttr(&attrs, "aws.cloudfront.x_forwarded_for", entry.XForwardedFor)
+	addAttr(&attrs, "aws.cloudfront.ssl_protocol", entry.SSLProtocol)
+	addAttr(&attrs, "aws.cloudfront.ssl_cipher", entry.SSLCipher)
+	addAttr(&attrs, "aws.cloudfront.response_result_type", entry.XEdgeResponseResultType)
+	addAttr(&attrs, "aws.cloudfront.fle_status", entry.FLEStatus)
+	addIntAttr(&attrs, "aws.cloudfront.fle_encrypted_fields", entry.FLEEncryptedFields)
+	addFloatAttr(&attrs, "aws.cloudfront.time_to_first_byte", entry.TimeToFirstByte)
+	addAttr(&attrs, "aws.cloudfront.detailed_result_type", entry.XEdgeDetailedResultType)
+	addAttr(&attrs, "aws.cloudfront.sc_content_type", entry.SCContentType)
+	addInt64Attr(&attrs, "aws.cloudfront.sc_content_len", entry.SCContentLen)
+	addAttr(&attrs, "aws.cloudfront.sc_range_start", entry.SCRangeStart)
+	addAttr(&attrs, "aws.cloudfront.sc_range_end", entry.SCRangeEnd)
+
+	// Cookie (often contains sensitive info, maybe mask or exclude? AWS logs it)
+	// addAttr(&attrs, "aws.cloudfront.cookie", entry.CSCookie)
+
+	return attrs
+}
+
+// ExtractResourceAttributesCloudFront extracts cloud resource attributes from CloudFront entry
+func ExtractResourceAttributesCloudFront(entry *parser.CloudFrontLogEntry) []OTelAttribute {
+	attrs := []OTelAttribute{
+		{Key: "cloud.provider", Value: stringValue("aws")},
+		{Key: "cloud.platform", Value: stringValue("aws_cloudfront")},
+		{Key: "cloud.service", Value: stringValue("cloudfront")},
+		{Key: "service.name", Value: stringValue("cloudfront-log-parser")},
+	}
+
+	// Distribution ID is usually part of the filename, not the log entry itself (except cs(Host) is domain)
+	// cs(Host) example: d111111abcdef8.cloudfront.net
+	if entry.CSHost != "" && strings.HasSuffix(entry.CSHost, ".cloudfront.net") {
+		distID := strings.TrimSuffix(entry.CSHost, ".cloudfront.net")
+		attrs = append(attrs, OTelAttribute{Key: "aws.cloudfront.distribution_id", Value: stringValue(distID)})
+	}
+
+	return attrs
+}

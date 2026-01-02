@@ -58,6 +58,7 @@ func init() {
 	registry = processor.NewRegistry()
 	registry.Register(&processor.ALBProcessor{MaxBatchSize: maxBatchSize, MaxConcurrent: maxConcurrent})
 	registry.Register(&processor.NLBProcessor{MaxBatchSize: maxBatchSize, MaxConcurrent: maxConcurrent})
+	registry.Register(&processor.CloudFrontProcessor{MaxBatchSize: maxBatchSize, MaxConcurrent: maxConcurrent})
 	registry.Register(&processor.WAFProcessor{})
 }
 
