@@ -71,55 +71,77 @@ func handler(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResp
 
 	logger.Info("Lambda triggered", "sqs_record_count", len(sqsEvent.Records))
 
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	sem := make(chan struct{}, maxConcurrent)
+
 	for _, record := range sqsEvent.Records {
-		// Parse Body as S3 Event
-		s3Records, err := parseBodyAsS3(logger, []byte(record.Body))
-		if err != nil {
-			logger.Warn("Failed to parse SQS body, skipping message", "message_id", record.MessageId, "error", err)
-			continue
-		}
+		wg.Add(1)
+		go func(record events.SQSMessage) {
+			defer wg.Done()
 
-		// Usually one SQS message contains one S3 event (EventBridge wrapper)
-		// But parseBodyAsS3 returns slice, so handle all
-		msgFailed := false
-		for _, s3Record := range s3Records {
-			bucket := s3Record.S3.Bucket.Name
-			key := s3Record.S3.Object.Key
+			// Acquire semaphore
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
-			if bucket == "" || key == "" {
-				logger.Warn("Skipping record with empty bucket or key", "message_id", record.MessageId)
-				continue
-			}
-
-			log := logger.With("bucket", bucket, "key", key, "message_id", record.MessageId)
-			log.Info("Processing S3 object")
-
-			// Find matching processor
-			proc := registry.Find(bucket, key)
-			if proc == nil {
-				log.Info("Skipping object: no matching processor found")
-				continue
-			}
-
-			// Process logs
-			entries, err := proc.Process(ctx, logger, s3Client, bucket, key)
+			// Parse Body as S3 Event
+			s3Records, err := parseBodyAsS3(logger, []byte(record.Body))
 			if err != nil {
-				log.Error("Error processing S3 object", "error", err)
-				msgFailed = true
-				break // Stop processing this SQS message, mark as failed
+				logger.Warn("Failed to parse SQS body, skipping message", "message_id", record.MessageId, "error", err)
+				return
 			}
 
-			if len(entries) > 0 {
-				allEntries = append(allEntries, entries...)
-			}
-		}
+			// Usually one SQS message contains one S3 event (EventBridge wrapper)
+			// But parseBodyAsS3 returns slice, so handle all
+			msgFailed := false
+			var recordEntries []adapter.LogAdapter
 
-		if msgFailed {
-			response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{
-				ItemIdentifier: record.MessageId,
-			})
-		}
+			for _, s3Record := range s3Records {
+				bucket := s3Record.S3.Bucket.Name
+				key := s3Record.S3.Object.Key
+
+				if bucket == "" || key == "" {
+					logger.Warn("Skipping record with empty bucket or key", "message_id", record.MessageId)
+					continue
+				}
+
+				log := logger.With("bucket", bucket, "key", key, "message_id", record.MessageId)
+				log.Info("Processing S3 object")
+
+				// Find matching processor
+				proc := registry.Find(bucket, key)
+				if proc == nil {
+					log.Info("Skipping object: no matching processor found")
+					continue
+				}
+
+				// Process logs
+				entries, err := proc.Process(ctx, logger, s3Client, bucket, key)
+				if err != nil {
+					log.Error("Error processing S3 object", "error", err)
+					msgFailed = true
+					break // Stop processing this SQS message, mark as failed
+				}
+
+				if len(entries) > 0 {
+					recordEntries = append(recordEntries, entries...)
+				}
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if msgFailed {
+				response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{
+					ItemIdentifier: record.MessageId,
+				})
+			} else if len(recordEntries) > 0 {
+				allEntries = append(allEntries, recordEntries...)
+			}
+		}(record)
 	}
+
+	wg.Wait()
 
 	// Send successful entries to OTLP
 	if len(allEntries) > 0 {
