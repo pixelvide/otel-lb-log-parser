@@ -14,6 +14,10 @@ func TestCloudFrontProcessor_Matches(t *testing.T) {
 		{"E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", true},
 		{"prefix/E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", true},
 		{"my/custom/path/E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", true},
+		// Test case for "Amazon S3 bucket without a prefix" (Default CloudFront behavior adds AWSLogs prefix)
+		{"AWSLogs/123456789012/CloudFront/E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", true},
+		// Test case for root of bucket (if manually configured or legacy)
+		{"E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", true},
 		{"not-cloudfront.log", false},
 		{"E2K55636F2K7.2019-12-04-21.d111111abcdef8.txt", false}, // Must be .gz
 		{"invalid-format.gz", false}, // Does not match pattern
