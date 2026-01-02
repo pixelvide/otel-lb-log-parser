@@ -11,15 +11,15 @@ func TestCloudFrontProcessor_Matches(t *testing.T) {
 		key  string
 		want bool
 	}{
-		{"E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", true},
-		{"prefix/E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", true},
-		{"my/custom/path/E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", true},
-		// Test case for "Amazon S3 bucket without a prefix" (Default CloudFront behavior adds AWSLogs prefix)
+		// Valid case: Standard Logging v2 with default prefix
 		{"AWSLogs/123456789012/CloudFront/E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", true},
-		// Test case for root of bucket (if manually configured or legacy)
-		{"E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", true},
+		// Invalid cases: Legacy or Custom prefixes
+		{"E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", false}, // Legacy/Root
+		{"prefix/E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", false}, // Custom prefix
+		{"my/custom/path/E2K55636F2K7.2019-12-04-21.d111111abcdef8.gz", false}, // Custom path
+		// Invalid cases: Other types
 		{"not-cloudfront.log", false},
-		{"E2K55636F2K7.2019-12-04-21.d111111abcdef8.txt", false}, // Must be .gz
+		{"AWSLogs/123456789012/CloudFront/E2K55636F2K7.2019-12-04-21.d111111abcdef8.txt", false}, // Must be .gz
 		{"invalid-format.gz", false}, // Does not match pattern
 		{"AWSLogs/123456789012/elasticloadbalancing/us-east-1/2023/01/01/123456789012_elasticloadbalancing_us-east-1_app.my-load-balancer.1234567890.gz", false}, // ALB log
 	}

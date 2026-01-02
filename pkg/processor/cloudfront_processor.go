@@ -29,10 +29,14 @@ func (p *CloudFrontProcessor) Name() string {
 }
 
 func (p *CloudFrontProcessor) Matches(bucket, key string) bool {
-	// CloudFront logs don't have a fixed prefix like ALB unless configured by user.
-	// But they follow a specific naming convention ending in .gz
-	// and containing a date stamp.
-	return strings.HasSuffix(key, ".gz") && cloudFrontLogPattern.MatchString(key)
+	// Only match standard logging (v2) with default prefix structure:
+	// AWSLogs/{account-id}/CloudFront/{distribution-id}.{date}.{unique-id}.gz
+	// We strictly require "AWSLogs/" prefix and "/CloudFront/" segment to avoid
+	// processing legacy logs or custom prefixes as requested.
+	return strings.HasPrefix(key, "AWSLogs/") &&
+		strings.Contains(key, "/CloudFront/") &&
+		strings.HasSuffix(key, ".gz") &&
+		cloudFrontLogPattern.MatchString(key)
 }
 
 func (p *CloudFrontProcessor) Process(ctx context.Context, logger *slog.Logger, s3Client *s3.S3, bucket, key string) ([]adapter.LogAdapter, error) {
