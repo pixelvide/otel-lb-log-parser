@@ -65,6 +65,7 @@ temp/
 # Lambda deployment
 function.zip
 lambda.zip
+main
 
 # Docker
 .dockerignore
